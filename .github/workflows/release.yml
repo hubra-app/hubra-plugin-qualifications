@@ -1,0 +1,77 @@
+name: Test and release
+
+# Tests every push and pull request; a pushed v* tag that matches plugin.yaml
+# (v1.3.0 for version 1.3.0) is also signed and released:
+#
+#     git tag v1.3.0 && git push origin v1.3.0
+#
+# The steps live in hubra-app/hubra-plugins-template: .github/workflows/
+# plugin.yml tests, .github/actions/sign signs, .github/workflows/publish.yml
+# releases. Every plugin uses the same files, pinned to a commit, so the
+# checks and the signing are the same everywhere; move the pins to take a
+# newer version. Only the template itself uses its own copies (./...), so a
+# change to them is tested in its own pull request. A plugin made from the
+# template points them at hubra-app/hubra-plugins-template@<commit> instead,
+# as in the README.
+#
+# The sign job stays here, in the plugin's own file: only a job of the
+# plugin's own workflow that names the environment "plugin-signing" gets its
+# secret HUBRA_SIGNING_KEY (in a called workflow it came through empty).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin:
+    uses: ./.github/workflows/plugin.yml
+    secrets:
+      HUBRA_READ_TOKEN: ${{ secrets.HUBRA_READ_TOKEN }}
+
+  sign:
+    needs: plugin
+    # Never sign the template itself, only plugins made from it.
+    if: github.ref_type == 'tag' && !github.event.repository.is_template
+    runs-on: ubuntu-24.04
+    environment: plugin-signing
+    steps:
+      - uses: ./.github/actions/sign
+        with:
+          signing-key: ${{ secrets.HUBRA_SIGNING_KEY }}
+          hubra-read-token: ${{ secrets.HUBRA_READ_TOKEN }}
+          signer: ${{ vars.HUBRA_SIGNER || 'Hubra' }}
+          id: ${{ needs.plugin.outputs.id }}
+          version: ${{ needs.plugin.outputs.version }}
+
+  release:
+    needs: [plugin, sign]
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: write
+    with:
+      id: ${{ needs.plugin.outputs.id }}
+      version: ${{ needs.plugin.outputs.version }}
+    secrets:
+      MARKETPLACE_TOKEN: ${{ secrets.MARKETPLACE_TOKEN }}
+
+  # The check branch protection requires. The jobs of a called workflow
+  # report as "plugin / test" and so on; this one keeps the name "test" and
+  # passes when the tests passed and, on a tag, signing and release did too.
+  test:
+    needs: [plugin, sign, release]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          PLUGIN: ${{ needs.plugin.result }}
+          SIGN: ${{ needs.sign.result }}
+          RELEASE: ${{ needs.release.result }}
+          TAG: ${{ github.ref_type == 'tag' && !github.event.repository.is_template }}
+        run: |
+          echo "plugin: $PLUGIN, sign: $SIGN, release: $RELEASE"
+          [ "$PLUGIN" = success ] || exit 1
+          if [ "$TAG" = true ]; then [ "$SIGN" = success ] && [ "$RELEASE" = success ]; fi

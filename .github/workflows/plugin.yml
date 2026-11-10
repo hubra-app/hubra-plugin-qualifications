@@ -1,0 +1,228 @@
+name: Plugin
+
+# Tests an official plugin, called by each plugin's .github/workflows/
+# release.yml, so every plugin runs the same checks. A change here reaches a
+# plugin when its release.yml points at the new commit.
+#
+# Every push and pull request runs the plugin's tests and type check against
+# Hubra's main. On a tag that matches plugin.yaml (v1.3.0 for version 1.3.0)
+# it also builds the frontend for the sign job.
+#
+# Signing and publishing are not in here, because a job of a called workflow
+# never received the environment secret HUBRA_SIGNING_KEY (it came through
+# empty). Each plugin's release.yml has its own sign job, which names the
+# environment "plugin-signing" and runs the template's sign action
+# (.github/actions/sign), and then calls publish.yml. See release.yml in the
+# template for the whole caller.
+#
+# Secrets, passed by the caller:
+#   HUBRA_READ_TOKEN    only while hubra-app/hubra is private: a token that can
+#                       read it (Contents: read)
+on:
+  workflow_call:
+    secrets:
+      HUBRA_READ_TOKEN:
+        required: false
+      # No longer used here (publish.yml takes it); kept so a caller that
+      # still passes it doesn't fail.
+      MARKETPLACE_TOKEN:
+        required: false
+    outputs:
+      id:
+        description: The plugin's id from plugin.yaml
+        value: ${{ jobs.test.outputs.id }}
+      version:
+        description: The plugin's version from plugin.yaml
+        value: ${{ jobs.test.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    outputs:
+      id: ${{ steps.manifest.outputs.id }}
+      version: ${{ steps.manifest.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+      - name: Check the tag against plugin.yaml
+        id: manifest
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          text = open("plugin/plugin.yaml").read()
+          pid = re.search(r"^id:\s*[\"']?([\w-]+)", text, re.M).group(1)
+          ver = re.search(r"^version:\s*[\"']?([^\"'\s]+)", text, re.M).group(1)
+          tag = os.environ["TAG"]
+          if tag and tag != f"v{ver}":
+              raise SystemExit(f"::error::tag {tag}, but plugin.yaml says version {ver}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"id={pid}\nversion={ver}\n")
+          PY
+      # A plugin uses Hubra and its own code only, never another plugin's:
+      # the other plugin may be missing, switched off or on another version.
+      # Talk to other areas through Hubra's API and slots instead.
+      - name: No imports from other plugins
+        run: |
+          python3 - <<'PY'
+          import ast, pathlib, re, sys
+          root = pathlib.Path("plugin")
+          text = (root / "plugin.yaml").read_text()
+          own = re.search(r"^package:\s*[\"']?([\w]+)", text, re.M).group(1)
+          bad = []
+          for f in sorted(root.rglob("*.py")):
+              if ".git" in f.parts or "node_modules" in f.parts:
+                  continue
+              for node in ast.walk(ast.parse(f.read_text(), str(f))):
+                  if isinstance(node, ast.Import):
+                      names = [a.name for a in node.names]
+                  elif isinstance(node, ast.ImportFrom) and not node.level:
+                      names = [node.module or ""]
+                  else:
+                      continue
+                  for name in names:
+                      top = name.split(".")[0]
+                      # hubra_<x> is another plugin's package; hubra.plugins
+                      # and plugin modules moved out of core count too.
+                      if (top.startswith("hubra_") and top != own) or name.startswith("hubra.plugins."):
+                          bad.append(f"{f.relative_to(root)}:{node.lineno}: {name}")
+          src = root / "frontend" / "src"
+          for f in sorted(src.rglob("*.ts*")) if src.is_dir() else []:
+              for n, line in enumerate(f.read_text().splitlines(), 1):
+                  m = re.search(r"""(?:from|import)\s*\(?\s*['"]([^'"]+)['"]""", line)
+                  if not m:
+                      continue
+                  spec = m.group(1)
+                  resolved = (f.parent / spec).resolve() if spec.startswith(".") else None
+                  if (resolved and src.resolve() not in resolved.parents and resolved != src.resolve()) \
+                          or re.match(r"@hubra/(?!plugin-sdk$)|hubra-plugin-", spec):
+                      bad.append(f"{f.relative_to(root)}:{n}: {spec}")
+          for b in bad:
+              print(f"::error::import from outside this plugin: {b}")
+          if bad:
+              sys.exit("A plugin may import Hubra (hubra.*, @hubra/plugin-sdk) and its own code only.")
+          print("No imports from other plugins.")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hubra-app/hubra
+          path: hubra
+          token: ${{ secrets.HUBRA_READ_TOKEN || github.token }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: hubra/app/backend/requirements.lock
+      - run: pip install --no-deps -r hubra/app/backend/requirements.lock
+      - run: pip install pytest pytest-flask
+      # A plugin that uses another plugin's area is an add-on of it: Hubra
+      # shows it under that plugin and checks the version on every install
+      # and update. So the manifest has to say so: every other module the
+      # plugin builds on (its module codes like inventory.keys, the slots it
+      # fills like inventory.item) under requires:, and every plugin those
+      # come from under depends: with a version range.
+      - name: The manifest declares every dependency
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          import yaml
+          from packaging.specifiers import InvalidSpecifier, SpecifierSet
+          root = pathlib.Path("plugin")
+          m = yaml.safe_load((root / "plugin.yaml").read_text()) or {}
+          pid = str(m.get("id", ""))
+          own = [str(c) for c in m.get("modules") or []]
+          requires = [str(c) for c in m.get("requires") or []]
+          depends = m.get("depends") or {}
+          if not isinstance(depends, dict):
+              sys.exit("::error::depends: a mapping of plugin id to version range")
+          # What Hubra itself provides: its modules and the slots its app has.
+          core = set()
+          for f in pathlib.Path("hubra/app/backend/hubra/modules").glob("*.py"):
+              core.update(re.findall(r'\bcode="([a-z][a-z0-9_.]*)"', f.read_text()))
+          slots = set()
+          for f in pathlib.Path("hubra/app/frontend/src").rglob("*.tsx"):
+              if ".test." in f.name:
+                  continue
+              slots.update(re.findall(r'<PluginSlot\s+name="([a-z][a-z0-9_.]*)"', f.read_text()))
+          area = lambda code: code.split(".")[0]
+          mine = {area(c) for c in own if "." not in c} | {pid}
+          used = {}  # area -> where it is used
+          for c in own:
+              if "." in c and area(c) not in mine:
+                  used.setdefault(area(c), f"module {c}")
+          src = root / "frontend" / "src"
+          for f in sorted(src.rglob("*.ts*")) if src.is_dir() else []:
+              for s in re.findall(r"""\bslot:\s*['"]([a-z][a-z0-9_.]*)['"]""", f.read_text()):
+                  if s not in slots and area(s) not in mine and area(s) not in core:
+                      used.setdefault(area(s), f"slot {s} in {f.relative_to(root)}")
+          bad = []
+          for a, where in sorted(used.items()):
+              if not any(r == a or r.startswith(a + ".") for r in requires):
+                  bad.append(f"uses {a} ({where}) but requires: doesn't list it")
+          for r in requires:
+              if r in core or area(r) in mine:
+                  continue
+              rng = depends.get(area(r))
+              if rng in (None, ""):
+                  bad.append(
+                      f"requires {r}, which the plugin {area(r)} provides: name it under "
+                      f'depends: with a version range, e.g. depends: {{{area(r)}: ">=2.0,<3"}}'
+                  )
+          for d, rng in depends.items():
+              try:
+                  SpecifierSet(str(rng or ""))
+              except InvalidSpecifier:
+                  bad.append(f"depends: {d}: '{rng}' isn't a version range like '>=2.0,<3'")
+              if not str(rng or "").strip():
+                  bad.append(f"depends: {d} has no version range")
+          for b in bad:
+              print(f"::error file=plugin.yaml::{b}")
+          if bad:
+              sys.exit("Declare every plugin this one builds on (docs/plugins.md, Add-ons in hubra-app/hubra).")
+          print("Dependencies declared:", ", ".join(f"{d} {r}" for d, r in depends.items()) or "only Hubra")
+          PY
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: hubra/app/frontend/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: hubra/app/frontend
+
+      - name: Test against Hubra
+        working-directory: hubra/app/backend
+        env:
+          ID: ${{ steps.manifest.outputs.id }}
+        run: |
+          rm -rf "../../plugins/$ID" && cp -r "$GITHUB_WORKSPACE/plugin" "../../plugins/$ID"
+          # Plugins it builds on (requires: or depends: naming another
+          # official plugin, e.g. inventory) are tested with it, from main.
+          deps=$(python -c 'import sys, yaml; m = yaml.safe_load(open(sys.argv[1])); print(*(m.get("requires") or []), *(m.get("depends") or {}))' "../../plugins/$ID/plugin.yaml")
+          for dep in $deps; do
+            if [ "$dep" != "$ID" ] && [ ! -d "../../plugins/$dep" ]; then
+              GIT_TERMINAL_PROMPT=0 git clone -q --depth 1 "https://github.com/hubra-app/hubra-plugin-$dep" "../../plugins/$dep" 2>/dev/null \
+                && echo "Testing with the $dep plugin" || true
+            fi
+          done
+          (cd ../frontend && npm run typecheck:plugins)
+          if [ -d "../../plugins/$ID/tests" ]; then pytest -q "../../plugins/$ID"; fi
+
+      - name: Build the frontend
+        if: github.ref_type == 'tag'
+        working-directory: hubra/app/frontend
+        env:
+          ID: ${{ steps.manifest.outputs.id }}
+        run: npm run build:plugin -- "../../plugins/$ID"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.ref_type == 'tag'
+        with:
+          name: frontend
+          path: hubra/plugins/${{ steps.manifest.outputs.id }}/frontend/dist/
+          if-no-files-found: ignore
+          retention-days: 1

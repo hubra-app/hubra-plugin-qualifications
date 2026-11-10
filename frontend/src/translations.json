@@ -1,0 +1,38 @@
+{
+  "en-GB": {
+    "shell": { "nav": { "example": "Notice board" } },
+    "example": {
+      "title": "Notice board",
+      "desc": "Short notes for the whole club",
+      "placeholder": "Write a note…",
+      "add": "Post note",
+      "saved": "Note posted",
+      "delete": "Delete note",
+      "loading": "Loading…",
+      "empty": "No notes yet.",
+      "widget": {
+        "latest": "Latest notes",
+        "latestHint": "The newest notes on the board",
+        "count": "How many"
+      }
+    }
+  },
+  "de-CH": {
+    "shell": { "nav": { "example": "Pinnwand" } },
+    "example": {
+      "title": "Pinnwand",
+      "desc": "Kurze Notizen für den ganzen Verein",
+      "placeholder": "Notiz schreiben …",
+      "add": "Notiz posten",
+      "saved": "Notiz gepostet",
+      "delete": "Notiz löschen",
+      "loading": "Wird geladen …",
+      "empty": "Noch keine Notizen.",
+      "widget": {
+        "latest": "Neueste Notizen",
+        "latestHint": "Die neuesten Notizen am Brett",
+        "count": "Wie viele"
+      }
+    }
+  }
+}

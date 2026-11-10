@@ -1,0 +1,22 @@
+id: example
+name: Example
+version: "0.1.0"
+hubra: ">=0.2.5,<1"
+description: "A starting point for a Hubra plugin: one table, an API, a screen and a test."
+author: Hubra
+homepage: https://github.com/hubra-app/hubra-plugins-template
+license: AGPL-3.0-or-later
+tags: [example]
+package: hubra_example
+modules: [example]
+requires: [members]
+migrations: migrations
+frontend: frontend/dist/plugin.js
+# The areas this plugin extends; Hubra refuses a plugin that touches one it
+# doesn't list. See docs/plugins.md in hubra-app/hubra.
+uses: [routes, tables, settings, nav, frontend, contracts]
+# Other plugins it needs, with a version range. A plugin that uses another
+# plugin's module (under requires:, in a module code or a slot) is an add-on
+# of it and must name it here; the release check fails otherwise. E.g.
+# depends:
+#   inventory: ">=2.0,<3"

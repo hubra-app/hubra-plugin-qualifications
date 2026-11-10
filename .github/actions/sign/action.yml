@@ -1,0 +1,103 @@
+name: Sign a Hubra plugin
+description: >
+  Signs and packs the plugin of this repository with the official Hubra key
+  and uploads <id>-<version>.zip as the artifact "signed". Run it in a job of
+  the plugin's own release.yml that names the environment "plugin-signing",
+  after the template's plugin.yml (which builds the frontend).
+
+# The signing key is the most sensitive secret here: anything it signs
+# installs as "official" on every Hubra server. So only the sign job sees it,
+# as an environment secret of "plugin-signing" in the plugin's repository
+# (not an organisation or repository secret, which every job could read), and
+# that job runs no npm and no third-party action, only the plugin from git,
+# Hubra's backend and its locked Python packages. It takes just the built
+# frontend (frontend/dist) from the test job.
+#
+# The job has to be the plugin's own: a job inside a called workflow got the
+# environment secret empty, even with the environment named there.
+inputs:
+  signing-key:
+    description: The private key (PEM) of Hubra.pub, secrets.HUBRA_SIGNING_KEY of the environment plugin-signing
+    required: true
+  id:
+    description: The plugin's id (outputs.id of plugin.yml)
+    required: true
+  version:
+    description: The plugin's version (outputs.version of plugin.yml)
+    required: true
+  hubra-read-token:
+    description: Only while hubra-app/hubra is private, a token that can read it
+    required: false
+    default: ""
+  signer:
+    description: The name the signature carries
+    required: false
+    default: Hubra
+
+runs:
+  using: composite
+  steps:
+    - name: Refuse to sign the template
+      if: github.event.repository.is_template
+      shell: bash
+      run: echo "::error::the template itself is never signed" && exit 1
+    # The plugin straight from git, Hubra's backend and nothing npm touched
+    # but the built frontend.
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        path: plugin
+        persist-credentials: false
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: hubra-app/hubra
+        path: hubra
+        sparse-checkout: app/backend
+        token: ${{ inputs.hubra-read-token || github.token }}
+        persist-credentials: false
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: frontend
+        path: ${{ runner.temp }}/frontend
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.13"
+    - shell: bash
+      run: pip install --no-deps -r hubra/app/backend/requirements.lock
+
+    - name: Sign and pack
+      shell: bash
+      working-directory: hubra/app/backend
+      env:
+        FLASK_APP: "hubra:create_app()"
+        SIGNING_KEY: ${{ inputs.signing-key }}
+        SIGNER: ${{ inputs.signer }}
+        ID: ${{ inputs.id }}
+        VER: ${{ inputs.version }}
+      run: |
+        if [ -z "$SIGNING_KEY" ]; then echo "::error::add HUBRA_SIGNING_KEY to the plugin-signing environment, and name that environment in the sign job"; exit 1; fi
+        out="$GITHUB_WORKSPACE/build/$ID"
+        mkdir -p "$out" && git -C "$GITHUB_WORKSPACE/plugin" archive HEAD | tar -x -C "$out"  # what's committed
+        if [ -d "$RUNNER_TEMP/frontend" ]; then
+          rm -rf "$out/frontend/dist" && mkdir -p "$out/frontend" && cp -R "$RUNNER_TEMP/frontend" "$out/frontend/dist"
+        fi
+        flask plugins prune "$out"  # minus what .releaseignore lists
+        key="$RUNNER_TEMP/key.pem"
+        trap 'rm -f "$key"' EXIT
+        (umask 077 && printf '%s\n' "$SIGNING_KEY" > "$key")
+        # Refuse to sign with any key but the official one.
+        python - "$key" <<'PY'
+        import sys
+        from cryptography.hazmat.primitives import serialization
+        from hubra.core.plugins.trust import OFFICIAL_DIR, key_id, load_public
+        pub = serialization.load_pem_private_key(open(sys.argv[1], "rb").read(), None).public_key()
+        official = load_public((OFFICIAL_DIR / "Hubra.pub").read_text())
+        if key_id(pub) != key_id(official):
+            sys.exit(f"HUBRA_SIGNING_KEY is {key_id(pub)}, not the official key {key_id(official)}")
+        PY
+        flask plugins sign "$out" --key "$key" --signer "$SIGNER"
+        flask plugins pack "$out" -o "$GITHUB_WORKSPACE/$ID-$VER.zip"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: signed
+        path: ${{ inputs.id }}-${{ inputs.version }}.zip
+        retention-days: 1
