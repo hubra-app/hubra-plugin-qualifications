@@ -1,6 +1,6 @@
 # Security policy
 
-This policy covers the Hubra plugin in this repository.
+This policy covers the Qualifications plugin for Hubra in this repository.
 
 Problems in Hubra itself (the backend, the club app, SSO, manage) belong in
 [hubra-app/hubra](https://github.com/hubra-app/hubra/security/advisories/new).
@@ -19,7 +19,7 @@ Please do not open a public issue, discussion or pull request for a security
 problem.
 
 Report it privately through GitHub instead:
-[**Report a vulnerability**](../../security/advisories/new)
+[**Report a vulnerability**](https://github.com/hubra-app/hubra-plugin-qualifications/security/advisories/new)
 (or the Security tab › Report a vulnerability). Only the maintainers can see
 the report.
 
