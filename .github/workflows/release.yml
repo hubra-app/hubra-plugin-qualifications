@@ -9,10 +9,7 @@ name: Test and release
 # plugin.yml tests, .github/actions/sign signs, .github/workflows/publish.yml
 # releases. Every plugin uses the same files, pinned to a commit, so the
 # checks and the signing are the same everywhere; move the pins to take a
-# newer version. Only the template itself uses its own copies (./...), so a
-# change to them is tested in its own pull request. A plugin made from the
-# template points them at hubra-app/hubra-plugins-template@<commit> instead,
-# as in the README.
+# newer version.
 #
 # The sign job stays here, in the plugin's own file: only a job of the
 # plugin's own workflow that names the environment "plugin-signing" gets its
@@ -28,18 +25,17 @@ permissions:
 
 jobs:
   plugin:
-    uses: ./.github/workflows/plugin.yml
+    uses: hubra-app/hubra-plugins-template/.github/workflows/plugin.yml@dff168c657881a156d9a2ef90abe8ec09d17afed # main
     secrets:
       HUBRA_READ_TOKEN: ${{ secrets.HUBRA_READ_TOKEN }}
 
   sign:
     needs: plugin
-    # Never sign the template itself, only plugins made from it.
-    if: github.ref_type == 'tag' && !github.event.repository.is_template
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     environment: plugin-signing
     steps:
-      - uses: ./.github/actions/sign
+      - uses: hubra-app/hubra-plugins-template/.github/actions/sign@dff168c657881a156d9a2ef90abe8ec09d17afed # main
         with:
           signing-key: ${{ secrets.HUBRA_SIGNING_KEY }}
           hubra-read-token: ${{ secrets.HUBRA_READ_TOKEN }}
@@ -49,7 +45,7 @@ jobs:
 
   release:
     needs: [plugin, sign]
-    uses: ./.github/workflows/publish.yml
+    uses: hubra-app/hubra-plugins-template/.github/workflows/publish.yml@dff168c657881a156d9a2ef90abe8ec09d17afed # main
     permissions:
       contents: write
     with:
@@ -70,7 +66,7 @@ jobs:
           PLUGIN: ${{ needs.plugin.result }}
           SIGN: ${{ needs.sign.result }}
           RELEASE: ${{ needs.release.result }}
-          TAG: ${{ github.ref_type == 'tag' && !github.event.repository.is_template }}
+          TAG: ${{ github.ref_type == 'tag' }}
         run: |
           echo "plugin: $PLUGIN, sign: $SIGN, release: $RELEASE"
           [ "$PLUGIN" = success ] || exit 1

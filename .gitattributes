@@ -1,9 +1,4 @@
 # not part of the signed plugin
-.github/workflows export-ignore
-.github/rulesets export-ignore
-.github/pull_request_template.md export-ignore
-# .github/actions stays in the archive: GitHub downloads an action as the
-# repository's archive, so an export-ignored action can't be found
-# (plugins run .github/actions/sign from here). The template is never signed.
+.github export-ignore
 .gitattributes export-ignore
 .gitignore export-ignore

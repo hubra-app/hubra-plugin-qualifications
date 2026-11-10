@@ -1,8 +1,6 @@
-# Files that stay out of the released plugin zip: one pattern per line, like .gitignore.
-#   tests/        a folder
-#   *.log         any file named like this
-#   docs/x.md     a path from the plugin's root
-# The repository's own files (.git, .github, .gitignore, .gitattributes, this file) never go in.
+# Kept out of the release zip (see plugins/README.md)
 tests/
 frontend/src/
+frontend/tsconfig.json
+docs/screenshots/
 .mason.toml
