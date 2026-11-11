@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Badge, Button, Group, Modal, NumberInput, Paper, Select, Stack, Switch, Text, TextInput, Textarea } from '@mantine/core'
+import { Badge, Button, Group, NumberInput, Paper, Select, Switch, Text, TextInput, Textarea } from '@mantine/core'
 import { IconCertificate, IconPencil, IconPlus } from '@tabler/icons-react'
 import {
   ConfirmModal,
@@ -8,6 +8,7 @@ import {
   ErrorBanner,
   LoadingSpinner,
   MemberPicker,
+  Modal,
   PageHead,
   Seg,
   formatDate,
@@ -207,8 +208,31 @@ function QualificationForm({ entry, kinds, onClose }: { entry: Qualification | n
   }
 
   return (
-    <Modal opened onClose={onClose} title={entry ? `${entry.memberName}: ${entry.kindName}` : t('qualifications.add')}>
-      <Stack gap="sm">
+    <>
+      <Modal
+        open
+        onClose={onClose}
+        title={entry ? `${entry.memberName}: ${entry.kindName}` : t('qualifications.add')}
+        onSubmit={(e) => {
+          e?.preventDefault()
+          if (!busy && obtainedOn && (entry || (memberId && kindId))) void save()
+        }}
+        footer={
+          <>
+            {entry && (
+              <Button variant="subtle" color="red" mr="auto" onClick={() => setAsking(true)}>
+                {t('qualifications.remove')}
+              </Button>
+            )}
+            <Button variant="default" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" loading={busy} disabled={!obtainedOn || (!entry && (!memberId || !kindId))}>
+              {entry ? t('qualifications.save') : t('qualifications.add')}
+            </Button>
+          </>
+        }
+      >
         {!entry && (
           <>
             <MemberPicker label={t('qualifications.member')} value={memberId} onChange={(id) => setMemberId(id)} required />
@@ -229,21 +253,9 @@ function QualificationForm({ entry, kinds, onClose }: { entry: Qualification | n
           onChange={(e) => setExpiresOn(e.currentTarget.value)}
         />
         <TextInput label={t('qualifications.note')} placeholder={t('qualifications.notePlaceholder')} value={note} maxLength={500} onChange={(e) => setNote(e.currentTarget.value)} />
-        <Group justify="space-between" mt="sm">
-          {entry ? (
-            <Button variant="subtle" color="red" onClick={() => setAsking(true)}>
-              {t('qualifications.remove')}
-            </Button>
-          ) : (
-            <span />
-          )}
-          <Button onClick={save} loading={busy} disabled={!obtainedOn || (!entry && (!memberId || !kindId))}>
-            {entry ? t('qualifications.save') : t('qualifications.add')}
-          </Button>
-        </Group>
-      </Stack>
+      </Modal>
       <ConfirmModal open={asking} onClose={() => setAsking(false)} onConfirm={remove} title={t('qualifications.remove')} body={t('qualifications.removeConfirm')} confirmLabel={t('qualifications.remove')} />
-    </Modal>
+    </>
   )
 }
 
@@ -278,8 +290,31 @@ function KindForm({ kind, onClose }: { kind: QualificationKind | null; onClose: 
   }
 
   return (
-    <Modal opened onClose={onClose} title={kind ? kind.name : t('qualifications.addKind')}>
-      <Stack gap="sm">
+    <>
+      <Modal
+        open
+        onClose={onClose}
+        title={kind ? kind.name : t('qualifications.addKind')}
+        onSubmit={(e) => {
+          e?.preventDefault()
+          if (!busy && form.name.trim()) void save()
+        }}
+        footer={
+          <>
+            {kind && (
+              <Button variant="subtle" color="red" mr="auto" onClick={() => setAsking(true)}>
+                {t('qualifications.deleteKind')}
+              </Button>
+            )}
+            <Button variant="default" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button type="submit" loading={busy} disabled={!form.name.trim()}>
+              {t('qualifications.save')}
+            </Button>
+          </>
+        }
+      >
         <TextInput label={t('qualifications.kindName')} placeholder={t('qualifications.kindPlaceholder')} value={form.name} maxLength={120} onChange={(e) => setForm({ ...form, name: e.currentTarget.value })} required />
         <Textarea label={t('qualifications.description')} autosize minRows={2} value={form.description ?? ''} onChange={(e) => setForm({ ...form, description: e.currentTarget.value || null })} />
         <NumberInput
@@ -306,20 +341,8 @@ function KindForm({ kind, onClose }: { kind: QualificationKind | null; onClose: 
           checked={form.selfService}
           onChange={(e) => setForm({ ...form, selfService: e.currentTarget.checked })}
         />
-        <Group justify="space-between" mt="sm">
-          {kind ? (
-            <Button variant="subtle" color="red" onClick={() => setAsking(true)}>
-              {t('qualifications.deleteKind')}
-            </Button>
-          ) : (
-            <span />
-          )}
-          <Button onClick={save} loading={busy} disabled={!form.name.trim()}>
-            {t('qualifications.save')}
-          </Button>
-        </Group>
-      </Stack>
+      </Modal>
       <ConfirmModal open={asking} onClose={() => setAsking(false)} onConfirm={remove} title={t('qualifications.deleteKind')} body={t('qualifications.deleteKindConfirm', { name: kind?.name ?? '' })} confirmLabel={t('qualifications.deleteKind')} />
-    </Modal>
+    </>
   )
 }
