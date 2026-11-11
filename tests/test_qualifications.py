@@ -330,3 +330,71 @@ def test_queries_offer_the_clubs_own_kinds_and_who_holds_them(client, db, club):
         (laser["id"], "expired"),
         (first_aid["id"], None),
     ]
+
+
+def test_holds_for_a_member_only_their_own(client, db, club):
+    """Asked for a member, holds answers for that member, or anyone for a manager."""
+    from hubra.core.contracts import ActionForbidden, query
+    from hubra.core.models.member import Member
+
+    laser = _kind(client, name="Laser")
+    kim, max_ = db.session.get(Member, club["kim"]), db.session.get(Member, club["max"])
+    ask = dict(kind_ids=[laser["id"]])
+    assert query("qualifications.member.holds", member_id=max_.id, actor=max_, **ask)
+    assert query("qualifications.member.holds", member_id=max_.id, actor=kim, **ask)
+    with pytest.raises(ActionForbidden):
+        query("qualifications.member.holds", member_id=kim.id, actor=max_, **ask)
+
+
+def test_kind_with_holders_keeps_self_service(client, db, club):
+    """A self-claimed entry never turns into a club-checked one (and back)."""
+    _login(client, "max@test.ch")
+    added = client.post(f"{Q}/mine", json={"name": "Laser-Einführung"}).get_json()
+    _login(client, "kim@test.ch")
+    kid = added["kindId"]
+    resp = client.patch(f"{Q}/kinds/{kid}", json={"selfService": False})
+    assert resp.status_code == 409
+    assert client.get(f"{Q}/kinds").get_json()[0]["selfService"] is True
+    # Renaming is fine; so is switching once nobody holds it.
+    assert client.patch(f"{Q}/kinds/{kid}", json={"name": "Laser"}).status_code == 200
+    _login(client, "max@test.ch")
+    assert client.delete(f"{Q}/mine/{added['id']}").status_code == 204
+    _login(client, "kim@test.ch")
+    resp = client.patch(f"{Q}/kinds/{kid}", json={"selfService": False})
+    assert resp.status_code == 200 and resp.get_json()["selfService"] is False
+
+
+def test_bad_bodies_and_wildcards(client, db, club):
+    kind = _kind(client)
+    assert client.post(f"{Q}/kinds", json=["x"]).status_code == 400
+    assert client.post(Q, json=[1]).status_code == 400
+    assert client.patch(f"{Q}/kinds/{kind['id']}", json=5).status_code in (200, 400)
+    _login(client, "max@test.ch")
+    assert client.post(f"{Q}/mine", json=["x"]).status_code == 400
+    client.post(f"{Q}/mine", json={"name": "Grafik"})
+    # % and _ are searched for as such, not as wildcards.
+    assert client.get(f"{Q}/directory?q=%25").get_json() == []
+    assert client.get(f"{Q}/directory?q=_").get_json() == []
+    assert len(client.get(f"{Q}/directory?q=graf").get_json()) == 1
+
+
+def test_changes_are_audited(client, db, club):
+    from hubra.core.models.audit import AuditEntry
+    from sqlalchemy import select
+
+    kind = _kind(client, validMonths=12)
+    client.patch(f"{Q}/kinds/{kind['id']}", json={"remindDays": 10})
+    q = client.post(
+        Q,
+        json={
+            "memberId": club["max"],
+            "kindId": kind["id"],
+            "obtainedOn": "2026-01-01",
+        },
+    ).get_json()
+    client.patch(f"{Q}/{q['id']}", json={"expiresOn": "2099-01-01"})
+    actions = set(db.session.scalars(select(AuditEntry.action)))
+    assert {
+        "qualifications.kind.update",
+        "qualifications.qualification.update",
+    } <= actions

@@ -61,9 +61,27 @@ def list_kinds(ctx, data: KindsIn) -> list[Kind]:
 
 def member_holds(ctx, data: HoldsIn) -> list[Held]:
     """Whether the member holds each of these kinds (self-service ones are
-    left out, unknown ones too)."""
+    left out, unknown ones too).
+
+    Asked for a member (not as the system), it answers for that member
+    themselves, or for anyone when they manage qualifications: what others
+    hold is the managers' to see, as on the qualifications page.
+    """
     from .models import MemberQualification
-    from .routes import state
+    from .routes import MANAGE, state
+
+    if not ctx.system:
+        from hubra.core.contracts import ActionForbidden
+        from hubra.core.permissions import member_has_permission
+
+        me = ctx.actor
+        if me is None or (
+            me.id != data.member_id and not member_has_permission(me, MANAGE)
+        ):
+            raise ActionForbidden(
+                "qualifications.member.holds answers for the asking member;"
+                " others need the right " + MANAGE
+            )
 
     ids = list(dict.fromkeys(data.kind_ids))
     kinds = {

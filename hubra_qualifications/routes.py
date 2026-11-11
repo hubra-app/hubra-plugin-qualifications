@@ -165,6 +165,25 @@ def _bad(exc: ValueError):
     return api_error("VALIDATION_ERROR", str(exc), 400)
 
 
+def _body() -> dict:
+    """The JSON body as a dict; anything else (a list, a number) reads as
+    empty, so the checks answer 400 instead of failing on ``.get``."""
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _active(m: Member | None) -> bool:
+    return m is not None and m.archived_at is None and m.deleted_at is None
+
+
+def _holders(kind_id: int) -> int:
+    return db.session.scalar(
+        select(db.func.count())
+        .select_from(MemberQualification)
+        .where(MemberQualification.kind_id == kind_id)
+    )
+
+
 # ── Kinds ────────────────────────────────────────────────────────────────────
 
 
@@ -182,7 +201,7 @@ def list_kinds():
 def create_kind():
     k = QualificationKind(name=None, remind_days=30, self_service=False)
     try:
-        _read_kind(k, request.get_json(silent=True) or {})
+        _read_kind(k, _body())
     except ValueError as exc:
         return _bad(exc)
     if db.session.scalar(
@@ -208,11 +227,23 @@ def update_kind(kind_id: int):
     k = db.session.get(QualificationKind, kind_id)
     if k is None:
         return api_error("NOT_FOUND", "No such qualification.", 404)
+    was_self_service = k.self_service
     try:
-        _read_kind(k, request.get_json(silent=True) or {})
+        _read_kind(k, _body())
     except ValueError as exc:
         db.session.rollback()
         return _bad(exc)
+    if k.self_service != was_self_service and _holders(k.id):
+        # Self-service entries are what members say about themselves; the
+        # club's own ones are what managers checked. Flipping the kind would
+        # turn the one into the other for everyone who holds it.
+        db.session.rollback()
+        return api_error(
+            "KIND_IN_USE",
+            "Members hold this qualification; it can't switch between "
+            "self-service and the club's own. Add a new one instead.",
+            409,
+        )
     other = db.session.scalar(
         select(QualificationKind)
         .where(QualificationKind.name == k.name)
@@ -221,6 +252,13 @@ def update_kind(kind_id: int):
     if other:
         db.session.rollback()
         return api_error("DUPLICATE", "A qualification with this name exists.", 409)
+    log_audit(
+        get_current_member().id,
+        "qualifications.kind.update",
+        "QualificationKind",
+        k.id,
+        k.name,
+    )
     db.session.commit()
     return jsonify(_kind_out(k))
 
@@ -310,7 +348,7 @@ def _save(q: MemberQualification, data: dict, kind: QualificationKind) -> None:
 @qualifications_bp.post("")
 @permission_required("members", "manage", LABEL)
 def add_qualification():
-    data = request.get_json(silent=True) or {}
+    data = _body()
     try:
         member_id = _int(data, "memberId", 1, 2**31 - 1, required=True)
         kind_id = _int(data, "kindId", 1, 2**31 - 1, required=True)
@@ -318,7 +356,7 @@ def add_qualification():
         return _bad(exc)
     member = db.session.get(Member, member_id)
     kind = db.session.get(QualificationKind, kind_id)
-    if member is None or kind is None:
+    if not _active(member) or kind is None:
         return api_error("VALIDATION_ERROR", "memberId and kindId must exist", 400)
     q = db.session.scalar(
         select(MemberQualification)
@@ -361,13 +399,22 @@ def update_qualification(qid: int):
         return api_error("NOT_FOUND", "No such qualification.", 404)
     kind = db.session.get(QualificationKind, q.kind_id)
     try:
-        _save(q, request.get_json(silent=True) or {}, kind)
+        _save(q, _body(), kind)
     except ValueError as exc:
         db.session.rollback()
         return _bad(exc)
-    db.session.commit()
     member = db.session.get(Member, q.member_id)
-    return jsonify(_out(q, kind, member.name if member else None))
+    name = member.name if member else None
+    log_audit(
+        get_current_member().id,
+        "qualifications.qualification.update",
+        "MemberQualification",
+        q.id,
+        f"{name}: {kind.name} {q.obtained_on.isoformat()}"
+        f" – {q.expires_on.isoformat() if q.expires_on else '…'}",
+    )
+    db.session.commit()
+    return jsonify(_out(q, kind, name))
 
 
 @qualifications_bp.delete("/<int:qid>")
@@ -439,7 +486,7 @@ def _self_kind(data: dict) -> QualificationKind:
 @require_member
 def add_mine():
     member = get_current_member()
-    data = request.get_json(silent=True) or {}
+    data = _body()
     try:
         note = _note(data)
         kind = _self_kind(data)
@@ -506,7 +553,7 @@ def update_mine(qid: int):
     if err:
         return err
     try:
-        note = _note(request.get_json(silent=True) or {})
+        note = _note(_body())
     except ValueError as exc:
         return _bad(exc)
     if note != q.note:
@@ -549,12 +596,15 @@ def directory():
         query = query.where(MemberQualification.kind_id == kind_id)
     text = (request.args.get("q") or "").strip()[:80]
     if text:
-        like = f"%{text.lower()}%"
+        safe = (
+            text.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        like = f"%{safe}%"
         query = query.where(
             db.or_(
-                db.func.lower(QualificationKind.name).like(like),
+                db.func.lower(QualificationKind.name).like(like, escape="\\"),
                 db.func.lower(db.func.coalesce(MemberQualification.note, "")).like(
-                    like
+                    like, escape="\\"
                 ),
             )
         )
@@ -596,7 +646,7 @@ def confirm(qid: int):
     if q.member_id == me.id:
         return api_error("FORBIDDEN", "Someone else has to confirm yours.", 403)
     holder = db.session.get(Member, q.member_id)
-    if holder is None or holder.archived_at is not None:
+    if not _active(holder):
         return api_error("NOT_FOUND", "No such entry.", 404)
     if q.confirmed_by and q.confirmed_by != me.id:
         return api_error("DUPLICATE", "Someone has confirmed this already.", 409)
