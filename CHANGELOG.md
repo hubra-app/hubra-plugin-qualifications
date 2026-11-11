@@ -1,7 +1,28 @@
 # Changelog
 
-## Unreleased
+## 1.0.1
 
+Security fixes from the plugin audit.
+
+- A qualification members hold can no longer switch between self-service
+  and the club's own (409 `KIND_IN_USE`): before, ticking off "self-service"
+  turned what members had said about themselves into checked qualifications
+  (and back, showing managers' notes in Wer kann was).
+- `qualifications.member.holds` asked for a member answers only for that
+  member, or for anyone when they manage qualifications. As the system it
+  answers as before (Guides asks that way).
+- Changing a kind or a member's qualification (dates, note) is in the audit
+  log now.
+- No qualifications for archived or deleted members; no confirming their
+  entries either.
+- A self-service kind is removed with its last holder, so adding and
+  removing entries can't pile up empty kinds. The club's own kinds stay.
+- The daily job removes what a deleted member left behind: their entries
+  (notes included) and their id as creator or confirmer. Clubs made after
+  the plugin was installed get its tables without foreign keys, so the
+  database's own ON DELETE never ran there.
+- A JSON body that isn't an object answers 400, not 500. `%` and `_` in the
+  Wer kann was search match themselves, not anything.
 - Kind and entry dialogs use the shared footer (Abbrechen, main action, delete at the left) and save on Enter.
 
 ## 1.0.0

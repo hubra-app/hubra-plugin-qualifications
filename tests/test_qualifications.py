@@ -330,3 +330,152 @@ def test_queries_offer_the_clubs_own_kinds_and_who_holds_them(client, db, club):
         (laser["id"], "expired"),
         (first_aid["id"], None),
     ]
+
+
+def test_holds_for_a_member_only_their_own(client, db, club):
+    """Asked for a member, holds answers for that member, or anyone for a manager."""
+    from hubra.core.contracts import ActionForbidden, query
+    from hubra.core.models.member import Member
+
+    laser = _kind(client, name="Laser")
+    kim, max_ = db.session.get(Member, club["kim"]), db.session.get(Member, club["max"])
+    ask = dict(kind_ids=[laser["id"]])
+    assert query("qualifications.member.holds", member_id=max_.id, actor=max_, **ask)
+    assert query("qualifications.member.holds", member_id=max_.id, actor=kim, **ask)
+    with pytest.raises(ActionForbidden):
+        query("qualifications.member.holds", member_id=kim.id, actor=max_, **ask)
+
+
+def test_kind_with_holders_keeps_self_service(client, db, club):
+    """A self-claimed entry never turns into a club-checked one (and back)."""
+    _login(client, "max@test.ch")
+    added = client.post(f"{Q}/mine", json={"name": "Laser-Einführung"}).get_json()
+    _login(client, "kim@test.ch")
+    kid = added["kindId"]
+    resp = client.patch(f"{Q}/kinds/{kid}", json={"selfService": False})
+    assert resp.status_code == 409
+    assert client.get(f"{Q}/kinds").get_json()[0]["selfService"] is True
+    # Renaming is fine; so is switching once nobody holds it.
+    assert client.patch(f"{Q}/kinds/{kid}", json={"name": "Laser"}).status_code == 200
+    # A self-service kind nobody holds can switch.
+    empty = _kind(client, name="Grafik", selfService=True)
+    resp = client.patch(f"{Q}/kinds/{empty['id']}", json={"selfService": False})
+    assert resp.status_code == 200 and resp.get_json()["selfService"] is False
+
+
+def test_unused_self_service_kinds_go(client, db, club):
+    """Adding and removing entries leaves no empty self-service kinds."""
+    managed = _kind(client)
+    _login(client, "max@test.ch")
+    for i in range(3):
+        added = client.post(f"{Q}/mine", json={"name": f"Spam {i}"}).get_json()
+        assert client.delete(f"{Q}/mine/{added['id']}").status_code == 204
+    shared = client.post(f"{Q}/mine", json={"name": "Grafik"}).get_json()
+    _login(client, "kim@test.ch")
+    kims = client.post(f"{Q}/mine", json={"kindId": shared["kindId"]}).get_json()
+    names = [k["name"] for k in client.get(f"{Q}/kinds").get_json()]
+    assert names == ["Grafik", "Nothelfer"]
+    # Someone else still holds it: it stays; the last one takes it along,
+    # also when a manager removes the entry.
+    assert client.delete(f"{Q}/mine/{kims['id']}").status_code == 204
+    assert len(client.get(f"{Q}/kinds").get_json()) == 2
+    assert client.delete(f"{Q}/{shared['id']}").status_code == 204
+    assert [k["id"] for k in client.get(f"{Q}/kinds").get_json()] == [managed["id"]]
+    # The club's own kinds stay without holders.
+    q = client.post(
+        Q,
+        json={
+            "memberId": club["max"],
+            "kindId": managed["id"],
+            "obtainedOn": "2026-01-01",
+        },
+    ).get_json()
+    assert client.delete(f"{Q}/{q['id']}").status_code == 204
+    assert len(client.get(f"{Q}/kinds").get_json()) == 1
+
+
+def test_bad_bodies_and_wildcards(client, db, club):
+    kind = _kind(client)
+    assert client.post(f"{Q}/kinds", json=["x"]).status_code == 400
+    assert client.post(Q, json=[1]).status_code == 400
+    assert client.patch(f"{Q}/kinds/{kind['id']}", json=5).status_code in (200, 400)
+    _login(client, "max@test.ch")
+    assert client.post(f"{Q}/mine", json=["x"]).status_code == 400
+    client.post(f"{Q}/mine", json={"name": "Grafik"})
+    # % and _ are searched for as such, not as wildcards.
+    assert client.get(f"{Q}/directory?q=%25").get_json() == []
+    assert client.get(f"{Q}/directory?q=_").get_json() == []
+    assert len(client.get(f"{Q}/directory?q=graf").get_json()) == 1
+
+
+def test_changes_are_audited(client, db, club):
+    from hubra.core.models.audit import AuditEntry
+    from sqlalchemy import select
+
+    kind = _kind(client, validMonths=12)
+    client.patch(f"{Q}/kinds/{kind['id']}", json={"remindDays": 10})
+    q = client.post(
+        Q,
+        json={
+            "memberId": club["max"],
+            "kindId": kind["id"],
+            "obtainedOn": "2026-01-01",
+        },
+    ).get_json()
+    client.patch(f"{Q}/{q['id']}", json={"expiresOn": "2099-01-01"})
+    actions = set(db.session.scalars(select(AuditEntry.action)))
+    assert {
+        "qualifications.kind.update",
+        "qualifications.qualification.update",
+    } <= actions
+
+
+def test_purge_what_a_deleted_member_left(client, db, club):
+    """Club tables cloned without foreign keys keep a deleted member's rows;
+    the daily job removes them."""
+    from hubra.core.models.member import Member
+    from hubra_qualifications.models import MemberQualification, QualificationKind
+    from hubra_qualifications.routes import purge_orphans
+    from sqlalchemy import text
+
+    kind = _kind(client)
+    kept = client.post(
+        Q,
+        json={
+            "memberId": club["kim"],
+            "kindId": kind["id"],
+            "obtainedOn": "2026-01-01",
+        },
+    ).get_json()
+    _login(client, "max@test.ch")
+    grafik = client.post(f"{Q}/mine", json={"name": "Grafik", "note": "x"}).get_json()
+    _login(client, "kim@test.ch")
+    client.post(f"{Q}/{grafik['id']}/confirm")
+    mine = client.post(f"{Q}/mine", json={"name": "Löten"}).get_json()
+    _login(client, "max@test.ch")
+    client.post(f"{Q}/{mine['id']}/confirm")
+
+    # What a club without foreign keys does: the member row goes, ours stay.
+    gone = club["max"]
+    is_sqlite = db.engine.dialect.name == "sqlite"
+    if is_sqlite:
+        db.session.execute(text("PRAGMA foreign_keys=OFF"))
+    else:
+        db.session.execute(text("SET session_replication_role = replica"))
+    db.session.execute(text("DELETE FROM members WHERE id = :m").bindparams(m=gone))
+    if is_sqlite:
+        db.session.execute(text("PRAGMA foreign_keys=ON"))
+    else:
+        db.session.execute(text("SET session_replication_role = DEFAULT"))
+    db.session.expire_all()
+    assert db.session.get(Member, gone) is None
+
+    assert purge_orphans() == 1
+    rows = {q.id: q for q in db.session.query(MemberQualification)}
+    assert grafik["id"] not in rows and kept["id"] in rows
+    assert rows[mine["id"]].confirmed_by is None
+    assert rows[mine["id"]].confirmed_at is None
+    # Max's own self-service kind went with them; the logged-in Max is gone.
+    names = {k.name for k in db.session.query(QualificationKind)}
+    assert names == {"Nothelfer", "Löten"}
+    assert purge_orphans() == 0

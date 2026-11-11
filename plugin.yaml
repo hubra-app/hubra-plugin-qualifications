@@ -1,6 +1,6 @@
 id: qualifications
 name: Qualifications
-version: "1.0.0"
+version: "1.0.1"
 hubra: ">=0.2.5,<1"
 description: "Licences, first aid and machine inductions: who holds which and until when, with reminders before they expire. And who can do what for the club (Wer kann was), which members add themselves and others confirm."
 author: Hubra
