@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Kind and entry dialogs use the shared footer (Abbrechen, main action, delete at the left) and save on Enter.
+
 ## 1.0.0
 
 Qualifications are their own plugin now; up to Guides 1.x they were part of
