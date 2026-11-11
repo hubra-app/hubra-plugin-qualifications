@@ -430,9 +430,19 @@ def delete_qualification(qid: int):
         q.id,
         None,
     )
+    kind = db.session.get(QualificationKind, q.kind_id)
     db.session.delete(q)
+    _drop_if_unused(kind)
     db.session.commit()
     return "", 204
+
+
+def _drop_if_unused(kind: QualificationKind | None) -> None:
+    """A self-service kind goes with its last holder, so adding and removing
+    entries can't pile up kinds nobody has. The club's own kinds stay."""
+    db.session.flush()
+    if kind is not None and kind.self_service and not _holders(kind.id):
+        db.session.delete(kind)
 
 
 # ── What members can do (self-service) ──────────────────────────────────────
@@ -568,10 +578,11 @@ def update_mine(qid: int):
 @qualifications_bp.delete("/mine/<int:qid>")
 @require_member
 def delete_mine(qid: int):
-    q, _kind, err = _own(qid)
+    q, kind, err = _own(qid)
     if err:
         return err
     db.session.delete(q)
+    _drop_if_unused(kind)
     db.session.commit()
     return "", 204
 

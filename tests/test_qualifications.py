@@ -357,11 +357,41 @@ def test_kind_with_holders_keeps_self_service(client, db, club):
     assert client.get(f"{Q}/kinds").get_json()[0]["selfService"] is True
     # Renaming is fine; so is switching once nobody holds it.
     assert client.patch(f"{Q}/kinds/{kid}", json={"name": "Laser"}).status_code == 200
-    _login(client, "max@test.ch")
-    assert client.delete(f"{Q}/mine/{added['id']}").status_code == 204
-    _login(client, "kim@test.ch")
-    resp = client.patch(f"{Q}/kinds/{kid}", json={"selfService": False})
+    # A self-service kind nobody holds can switch.
+    empty = _kind(client, name="Grafik", selfService=True)
+    resp = client.patch(f"{Q}/kinds/{empty['id']}", json={"selfService": False})
     assert resp.status_code == 200 and resp.get_json()["selfService"] is False
+
+
+def test_unused_self_service_kinds_go(client, db, club):
+    """Adding and removing entries leaves no empty self-service kinds."""
+    managed = _kind(client)
+    _login(client, "max@test.ch")
+    for i in range(3):
+        added = client.post(f"{Q}/mine", json={"name": f"Spam {i}"}).get_json()
+        assert client.delete(f"{Q}/mine/{added['id']}").status_code == 204
+    shared = client.post(f"{Q}/mine", json={"name": "Grafik"}).get_json()
+    _login(client, "kim@test.ch")
+    kims = client.post(f"{Q}/mine", json={"kindId": shared["kindId"]}).get_json()
+    names = [k["name"] for k in client.get(f"{Q}/kinds").get_json()]
+    assert names == ["Grafik", "Nothelfer"]
+    # Someone else still holds it: it stays; the last one takes it along,
+    # also when a manager removes the entry.
+    assert client.delete(f"{Q}/mine/{kims['id']}").status_code == 204
+    assert len(client.get(f"{Q}/kinds").get_json()) == 2
+    assert client.delete(f"{Q}/{shared['id']}").status_code == 204
+    assert [k["id"] for k in client.get(f"{Q}/kinds").get_json()] == [managed["id"]]
+    # The club's own kinds stay without holders.
+    q = client.post(
+        Q,
+        json={
+            "memberId": club["max"],
+            "kindId": managed["id"],
+            "obtainedOn": "2026-01-01",
+        },
+    ).get_json()
+    assert client.delete(f"{Q}/{q['id']}").status_code == 204
+    assert len(client.get(f"{Q}/kinds").get_json()) == 1
 
 
 def test_bad_bodies_and_wildcards(client, db, club):

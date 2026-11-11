@@ -15,6 +15,8 @@ Security fixes from the plugin audit.
   log now.
 - No qualifications for archived or deleted members; no confirming their
   entries either.
+- A self-service kind is removed with its last holder, so adding and
+  removing entries can't pile up empty kinds. The club's own kinds stay.
 - A JSON body that isn't an object answers 400, not 500. `%` and `_` in the
   Wer kann was search match themselves, not anything.
 - Kind and entry dialogs use the shared footer (Abbrechen, main action, delete at the left) and save on Enter.
