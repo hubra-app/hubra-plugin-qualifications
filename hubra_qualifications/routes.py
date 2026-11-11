@@ -766,3 +766,36 @@ def remind(today: date | None = None) -> int:
         q.reminded_at = _now()
     db.session.flush()
     return len(due)
+
+
+def purge_orphans() -> int:
+    """Removes what a deleted member left behind. Returns how many entries.
+
+    A club made after the plugin was installed gets its tables cloned
+    without foreign keys, so ON DELETE CASCADE / SET NULL never run there:
+    a member deleted on request (data_requests.delete_member) would keep
+    their entries, notes included, and their id in created_by and
+    confirmed_by. Hubra has no member.deleted event yet, so the daily job
+    cleans up.
+    """
+    gone = ~select(Member.id).where(Member.id == MemberQualification.member_id).exists()
+    rows = db.session.scalars(select(MemberQualification).where(gone)).all()
+    kinds = {q.kind_id for q in rows}
+    for q in rows:
+        db.session.delete(q)
+    for column in (MemberQualification.created_by, MemberQualification.confirmed_by):
+        db.session.execute(
+            db.update(MemberQualification)
+            .where(column.is_not(None))
+            .where(~select(Member.id).where(Member.id == column).exists())
+            .values(
+                {column: None}
+                if column is MemberQualification.created_by
+                else {column: None, MemberQualification.confirmed_at: None}
+            )
+            .execution_options(synchronize_session=False)
+        )
+    db.session.flush()
+    for kid in kinds:
+        _drop_if_unused(db.session.get(QualificationKind, kid))
+    return len(rows)

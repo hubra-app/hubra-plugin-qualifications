@@ -11,8 +11,10 @@ from hubra.core.tasks import celery_app
 def remind() -> int:
     from hubra.core.extensions import db
 
+    from .routes import purge_orphans
     from .routes import remind as send
 
+    purge_orphans()
     done = send()
     db.session.commit()
     return done

@@ -17,6 +17,10 @@ Security fixes from the plugin audit.
   entries either.
 - A self-service kind is removed with its last holder, so adding and
   removing entries can't pile up empty kinds. The club's own kinds stay.
+- The daily job removes what a deleted member left behind: their entries
+  (notes included) and their id as creator or confirmer. Clubs made after
+  the plugin was installed get its tables without foreign keys, so the
+  database's own ON DELETE never ran there.
 - A JSON body that isn't an object answers 400, not 500. `%` and `_` in the
   Wer kann was search match themselves, not anything.
 - Kind and entry dialogs use the shared footer (Abbrechen, main action, delete at the left) and save on Enter.

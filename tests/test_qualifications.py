@@ -428,3 +428,54 @@ def test_changes_are_audited(client, db, club):
         "qualifications.kind.update",
         "qualifications.qualification.update",
     } <= actions
+
+
+def test_purge_what_a_deleted_member_left(client, db, club):
+    """Club tables cloned without foreign keys keep a deleted member's rows;
+    the daily job removes them."""
+    from hubra.core.models.member import Member
+    from hubra_qualifications.models import MemberQualification, QualificationKind
+    from hubra_qualifications.routes import purge_orphans
+    from sqlalchemy import text
+
+    kind = _kind(client)
+    kept = client.post(
+        Q,
+        json={
+            "memberId": club["kim"],
+            "kindId": kind["id"],
+            "obtainedOn": "2026-01-01",
+        },
+    ).get_json()
+    _login(client, "max@test.ch")
+    grafik = client.post(f"{Q}/mine", json={"name": "Grafik", "note": "x"}).get_json()
+    _login(client, "kim@test.ch")
+    client.post(f"{Q}/{grafik['id']}/confirm")
+    mine = client.post(f"{Q}/mine", json={"name": "Löten"}).get_json()
+    _login(client, "max@test.ch")
+    client.post(f"{Q}/{mine['id']}/confirm")
+
+    # What a club without foreign keys does: the member row goes, ours stay.
+    gone = club["max"]
+    is_sqlite = db.engine.dialect.name == "sqlite"
+    if is_sqlite:
+        db.session.execute(text("PRAGMA foreign_keys=OFF"))
+    else:
+        db.session.execute(text("SET session_replication_role = replica"))
+    db.session.execute(text("DELETE FROM members WHERE id = :m").bindparams(m=gone))
+    if is_sqlite:
+        db.session.execute(text("PRAGMA foreign_keys=ON"))
+    else:
+        db.session.execute(text("SET session_replication_role = DEFAULT"))
+    db.session.expire_all()
+    assert db.session.get(Member, gone) is None
+
+    assert purge_orphans() == 1
+    rows = {q.id: q for q in db.session.query(MemberQualification)}
+    assert grafik["id"] not in rows and kept["id"] in rows
+    assert rows[mine["id"]].confirmed_by is None
+    assert rows[mine["id"]].confirmed_at is None
+    # Max's own self-service kind went with them; the logged-in Max is gone.
+    names = {k.name for k in db.session.query(QualificationKind)}
+    assert names == {"Nothelfer", "Löten"}
+    assert purge_orphans() == 0
