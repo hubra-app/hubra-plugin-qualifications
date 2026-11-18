@@ -4,14 +4,15 @@ import { Badge, Button, Group, NumberInput, Paper, Select, Switch, Text, TextInp
 import { IconCertificate, IconPencil, IconPlus } from '@tabler/icons-react'
 import {
   ConfirmModal,
+  DateField,
   EmptyState,
   ErrorBanner,
+  formatDate,
   LoadingSpinner,
   MemberPicker,
   Modal,
   PageHead,
   Seg,
-  formatDate,
   useT,
   useToast,
 } from '@hubra/plugin-sdk'
@@ -239,9 +240,8 @@ function QualificationForm({ entry, kinds, onClose }: { entry: Qualification | n
             <Select label={t('qualifications.kind')} data={kinds.map((k) => ({ value: String(k.id), label: k.name }))} value={kindId} onChange={setKindId} required />
           </>
         )}
-        <TextInput type="date" label={t('qualifications.obtainedOn')} value={obtainedOn} max={today()} onChange={(e) => setObtainedOn(e.currentTarget.value)} required />
-        <TextInput
-          type="date"
+        <DateField label={t('qualifications.obtainedOn')} value={obtainedOn} max={today()} onChange={setObtainedOn} required />
+        <DateField
           label={t('qualifications.expiresOn')}
           description={
             kind?.validMonths || entry
@@ -250,7 +250,7 @@ function QualificationForm({ entry, kinds, onClose }: { entry: Qualification | n
           }
           value={expiresOn}
           min={obtainedOn}
-          onChange={(e) => setExpiresOn(e.currentTarget.value)}
+          onChange={setExpiresOn}
         />
         <TextInput label={t('qualifications.note')} placeholder={t('qualifications.notePlaceholder')} value={note} maxLength={500} onChange={(e) => setNote(e.currentTarget.value)} />
       </Modal>
